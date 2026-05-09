@@ -1,0 +1,22 @@
+# Core
+numpy>=1.23
+opencv-python>=4.8
+PyYAML>=6.0
+
+# Orbbec Femto Mega MKV playback (install matching wheel from Orbbec for your Python version)
+# pyorbbecsdk
+
+# Pose (pick one or more)
+ultralytics>=8.3.0
+# For MMPose + RTMDet instead of/in addition to Ultralytics:
+# torch  # install CUDA build from https://pytorch.org
+# mmpose mmdet mmcv mmengine
+
+# Optional: temporal filtering
+scipy>=1.10
+
+# Optional readers
+# open3d>=0.18
+
+# Optional CPU pose fallback
+# mediapipe>=0.10

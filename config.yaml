@@ -1,0 +1,122 @@
+# =============================================================================
+# Gait Analysis System Configuration
+# Orbbec Femto Mega Dual-Camera Treadmill Gait Analysis
+# =============================================================================
+
+# --- Video Input ---
+video:
+  camera1_path: ""          # Path to camera 1 MKV file
+  camera2_path: ""          # Path to camera 2 MKV file
+  # Reader backend: "orbbec" (OrbbecSDK), "open3d" (Open3D AzureKinect), "ffmpeg"
+  reader_backend: "orbbec"
+
+# --- Camera Intrinsics ---
+# If left empty, intrinsics will be read from MKV metadata
+camera:
+  camera1_intrinsics: null   # Or path to intrinsics JSON
+  camera2_intrinsics: null
+  depth_scale: 0.001         # Depth value to meters conversion (1mm = 0.001m)
+
+# --- ChArUco Calibration ---
+charuco:
+  # ArUco dictionary type: DICT_4X4_50, DICT_4X4_100, DICT_5X5_50,
+  # DICT_5X5_100, DICT_5X5_250, DICT_6X6_50, DICT_6X6_100, DICT_6X6_250
+  dictionary: "DICT_4X4_50"
+  # ChArUco board parameters
+  squares_x: 3               # Number of squares in X direction
+  squares_y: 2               # Number of squares in Y direction
+  square_length: 0.04        # Square side length in meters
+  marker_length: 0.03        # Marker side length in meters
+  # Number of ChArUco markers on treadmill frame
+  num_markers: 6
+  # Treadmill belt plane offset (downward from marker plane)
+  belt_plane_offset: 0.015   # 1.5 cm below marker plane
+  # Calibration frame sampling
+  calibration_frames: 30     # Number of frames to use for calibration
+  calibration_interval: 10   # Sample every N frames
+
+# --- Pose Estimation ---
+pose:
+  # Backend: "ultralytics" (YOLO pose, good on Windows + CUDA), "mmpose", or "mediapipe"
+  backend: "ultralytics"
+  # MediaPipe settings
+  mediapipe:
+    model_complexity: 2       # 0, 1, or 2 (higher = more accurate)
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+  # Ultralytics YOLO pose (see https://docs.ultralytics.com )
+  ultralytics:
+    weights: "yolo11n-pose.pt"
+    device: "0"
+    imgsz: 640
+    conf: 0.25
+
+  # MMPose settings
+  mmpose:
+    det_model: "rtmdet"       # Detection model
+    det_config: "rtmdet_m_640-8xb32_coco-person.py"
+    det_checkpoint: "rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth"
+    pose_model: "rtmpose"     # Pose model
+    pose_config: "rtmpose-l_8xb256-420e_body8-halpe26-256x192.py"
+    pose_checkpoint: "rtmpose-l_simcc-body7_pt-body7_420e-256x192-4dba18fc_20230504.pth"
+    device: "cuda:0"          # GPU device
+    det_score_thr: 0.5        # Detection score threshold
+    # Model directory (download models here)
+    model_dir: "./models"
+
+# --- 3D Reconstruction ---
+reconstruction:
+  # Method: "triangulation" (stereo), "depth" (depth map lookup), "fusion" (both)
+  method: "fusion"
+  # Triangulation settings
+  triangulation:
+    min_confidence: 0.3       # Minimum keypoint confidence for triangulation
+    reproj_error_threshold: 10.0  # Max reprojection error in pixels
+  # Depth-based settings
+  depth:
+    search_radius: 5          # Pixel radius for depth lookup
+    max_depth: 5.0            # Maximum valid depth in meters
+    min_depth: 0.3            # Minimum valid depth in meters
+  # Fusion weights
+  fusion:
+    triangulation_weight: 0.6
+    depth_weight: 0.4
+
+# --- Gait Analysis ---
+gait:
+  # Walking direction in ChArUco board frame (same axes as OpenCV board: Z out of plane)
+  forward_hint_board: [1.0, 0.0, 0.0]
+  # Heuristic thresholds for swing / contact (meters above belt plane)
+  airborne_thresh_m: 0.04
+  contact_thresh_m: 0.018
+  # Filtering
+  filter:
+    enabled: true
+    type: "butterworth"       # "butterworth" or "savgol"
+    cutoff_freq: 6.0          # Butterworth cutoff frequency (Hz)
+    assumed_fps: 30.0          # Used for Butterworth design when FPS is unknown
+    order: 4                  # Butterworth filter order
+    savgol_window: 11         # Savitzky-Golay window length
+    savgol_polyorder: 3       # Savitzky-Golay polynomial order
+  # Gait event detection
+  event_detection:
+    # Method: "velocity" (foot velocity), "position" (foot height)
+    method: "velocity"
+    velocity_threshold: 0.05  # m/s threshold for heel strike
+    height_threshold: 0.02    # meters threshold for ground contact
+  # Which side to analyze: "left", "right", "both"
+  analyze_side: "both"
+
+# --- Output ---
+output:
+  output_dir: "./output"
+  # Frame-level CSV
+  frame_csv: "gait_frame_data.csv"
+  # Gait cycle summary CSV
+  cycle_csv: "gait_cycle_data.csv"
+  # Save intermediate results
+  save_3d_poses: true
+  save_calibration: true
+  # Visualization
+  visualize: false
+  viz_output_dir: "./output/viz"
