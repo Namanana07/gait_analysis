@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>双相机跑步机步态分析 — 代码架构、调用关系与输入输出</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #58a6ff;
+      --border: #30363d;
+      --call: #3fb950;
+      --callee: #d29922;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      margin: 0;
+      padding: 0 1.25rem 3rem;
+      max-width: 960px;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.65rem; margin-top: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+    h2 { font-size: 1.2rem; margin-top: 1.75rem; color: var(--accent); }
+    h3 { font-size: 1.05rem; margin-top: 1rem; }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .toc {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem 1rem;
+      margin: 1rem 0;
+    }
+    .toc ul { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+    .toc a { color: var(--accent); text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    pre, code {
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 0.82rem;
+    }
+    pre {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.85rem 1rem;
+      overflow-x: auto;
+      white-space: pre;
+      color: #c9d1d9;
+    }
+    details {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 0.5rem 0;
+      overflow: hidden;
+    }
+    details > summary {
+      cursor: pointer;
+      padding: 0.65rem 1rem;
+      font-weight: 600;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      user-select: none;
+    }
+    details > summary::-webkit-details-marker { display: none; }
+    details > summary::before {
+      content: "▶";
+      font-size: 0.7rem;
+      color: var(--muted);
+      transition: transform 0.15s;
+    }
+    details[open] > summary::before { transform: rotate(90deg); }
+    details .inner { padding: 0 1rem 1rem 1.25rem; border-top: 1px solid var(--border); }
+    details details { margin-left: 0.35rem; background: #131c28; }
+    .tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      margin-right: 0.35rem;
+      vertical-align: middle;
+    }
+    .tag-entry { background: #238636; color: #fff; }
+    .tag-alt { background: #6e40c9; color: #fff; }
+    .tag-mod { background: #1f6feb; color: #fff; }
+    .calls { margin-top: 0.5rem; font-size: 0.88rem; }
+    .calls span.label { color: var(--call); font-weight: 600; }
+    .calls span.label2 { color: var(--callee); font-weight: 600; }
+    ul.compact { margin: 0.35rem 0; padding-left: 1.2rem; }
+    .file-path { color: #79c0ff; word-break: break-all; }
+    .io { margin: 0.4rem 0 0; font-size: 0.86rem; line-height: 1.5; padding: 0.35rem 0 0.35rem 0.65rem; border-left: 3px solid #388bfd66; }
+    .io strong { color: #d2a8ff; font-weight: 600; min-width: 3.5em; display: inline-block; }
+    footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<h1>双相机跑步机步态分析 — 代码架构说明（含输入输出）</h1>
+<p class="muted">本页为静态 HTML，使用浏览器打开即可。点击各层标题（▶）可展开/折叠。每个函数下列有 <strong>功能</strong>、<strong>输入</strong>、<strong>输出</strong>（类型与含义以源码为准）。</p>
+
+<div class="toc">
+  <strong>目录</strong>
+  <ul>
+    <li><a href="#overview">1. 项目定位与逻辑总览</a></li>
+    <li><a href="#structure">2. 目录与两条入口线</a></li>
+    <li><a href="#flow">3. 数据流（main 主线）</a></li>
+    <li><a href="#deps">4. 模块依赖关系</a></li>
+    <li><a href="#files">5. 分文件说明、函数调用关系与输入输出</a></li>
+    <li><a href="#config">6. 配置与外部库</a></li>
+  </ul>
+</div>
+
+<h2 id="overview">1. 项目定位与逻辑总览</h2>
+<p>本项目从两台奥比中光 Femto Mega 录制的 <strong>MKV RGB-D 视频</strong> 中读取同步帧，经 <strong>ChArUco 标定</strong> 得到世界坐标系与跑步机履带平面，再用 <strong>2D 姿态估计</strong>（MediaPipe / MMPose / Ultralytics）得到统一 26 关键点，通过 <strong>三角化 / 深度反投影 / 融合</strong> 得到 3D 姿态，最后计算 <strong>步态生物力学指标</strong> 并输出 CSV（及可选摘要）。</p>
+
+<details open>
+  <summary>整体流水线（概念层）</summary>
+  <div class="inner">
+<pre>视频(MKV) → 双路同步读帧 → ChArUco 标定(外参+履带平面)
+         → 每帧双相机 2D 姿态 → 3D 重建 → 步态分析/或 metrics+Tracker → CSV</pre>
+    <p class="muted">完整六步编排见 <span class="file-path">main.py</span> 中 <code>GaitAnalysisPipeline.run</code>；另一套精简导出见 <span class="file-path">run_pipeline.py</span> 的 <code>run_dual_mkv</code>。</p>
+  </div>
+</details>
+
+<h2 id="structure">2. 目录与两条入口线</h2>
+<pre>gait_analysis/
+├── main.py                 # 主入口：六步流水线 + GaitAnalyzer + CSVWriter（中文表头周期汇总）
+├── run_pipeline.py         # 备选入口：逐帧 metrics + GaitTracker，英文列名 CSV
+├── check_env.py            # 依赖与环境检查
+├── config.yaml             # 全局配置
+├── requirements.txt
+├── README.md
+└── modules/
+    ├── video_reader.py     # MKV 读取（orbbec / open3d / ffmpeg）+ 双相机同步
+    ├── calibration.py      # ChArUco 检测与标定结果
+    ├── pose_estimation.py  # 2D 姿态后端工厂与统一关键点
+    ├── reconstruction.py # 3D 重建（三角化/深度/融合）
+    ├── gait_analysis.py    # 步态事件、逐帧与步态周期参数（main 使用）
+    ├── metrics.py          # 跑步机坐标系下角度 + GaitTracker（run_pipeline 使用）
+    └── output.py           # 中文 CSV 与 summary（main 使用）</pre>
+<p class="muted">注：若仓库中缺少 <code>modules/__init__.py</code>，不影响以脚本方式运行（<code>main.py</code> 已将项目根加入 <code>sys.path</code>）。</p>
+
+<h2 id="flow">3. 数据流（main 主线）</h2>
+<details open>
+  <summary>main.py：GaitAnalysisPipeline.run 关键步骤</summary>
+  <div class="inner">
+    <ol class="compact">
+      <li><strong>开视频</strong>：<code>DualCameraReader(backend).open</code> → <code>synchronized_frames</code>（标定阶段采样）</li>
+      <li><strong>内参</strong>：<code>_get_intrinsics</code> ← 读取器元数据或 <code>config.yaml</code> 中 JSON 路径</li>
+      <li><strong>标定</strong>：已有 <code>output/calibration.json</code> 则 <code>CharucoCalibrator.load_calibration</code>，否则 <code>_run_calibration</code></li>
+      <li><strong>姿态</strong>：<code>create_pose_estimator</code></li>
+      <li><strong>3D</strong>：<code>PoseReconstructor.reconstruct</code></li>
+      <li><strong>步态</strong>：<code>GaitAnalyzer.add_frame</code> → 结束后 <code>compute_all_parameters</code></li>
+      <li><strong>输出</strong>：<code>CSVWriter.write_frame_csv</code> / <code>write_cycle_csv</code> / <code>write_summary</code></li>
+    </ol>
+    <p class="muted">处理前会关闭并重开视频，避免标定阶段消耗掉的起始帧影响正式逐帧处理。</p>
+  </div>
+</details>
+
+<h2 id="deps">4. 模块依赖关系</h2>
+<details open>
+  <summary>模块间 import 关系（简图）</summary>
+  <div class="inner">
+<pre>main.py
+  → video_reader, calibration, pose_estimation, reconstruction, gait_analysis, output
+
+run_pipeline.py
+  → calibration, metrics, pose_estimation, reconstruction, video_reader
+
+reconstruction.py  → pose_estimation, calibration
+gait_analysis.py    → reconstruction, pose_estimation, calibration
+output.py           → gait_analysis
+metrics.py          → pose_estimation, reconstruction, calibration</pre>
+  </div>
+</details>
+
+<h2 id="files">5. 分文件说明、函数调用关系与输入输出</h2>
+<p class="muted">下列每一项可继续点击展开：含「调用谁 / 被谁调用」，以及各函数 <strong>功能</strong>、<strong>输入</strong>、<strong>输出</strong>。</p>
+
+<!-- ========== main.py ========== -->
+<details>
+  <summary><span class="tag tag-entry">入口</span> <span class="file-path">main.py</span> — 主流水线与 CLI</summary>
+  <div class="inner">
+    <p>编排完整分析：<code>GaitAnalysisPipeline</code>；命令行：<code>main()</code>。</p>
+    <details>
+      <summary><code>GaitAnalysisPipeline.__init__(config_path)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>加载 YAML 配置，初始化标定/姿态/重建/分析等成员为占位（运行 <code>run</code> 时再赋值）。</p>
+        <p class="io"><strong>输入：</strong><code>config_path: str</code>。</p>
+        <p class="io"><strong>输出：</strong>无；设置 <code>self.config</code> 等实例属性。</p>
+      </div>
+    </details>
+    <details>
+      <summary><code>setup_logging(level)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>将根日志级别设为 <code>DEBUG/INFO/...</code>，统一日志格式与时间。</p>
+        <p class="io"><strong>输入：</strong><code>level: str</code>，如 <code>"INFO"</code>。</p>
+        <p class="io"><strong>输出：</strong>无返回值（<code>None</code>），副作用为全局 logging 配置。</p>
+        <div class="calls"><span class="label">调用：</span><code>logging.basicConfig</code></div>
+        <div class="calls"><span class="label2">被调用：</span><code>main()</code></div>
+      </div>
+    </details>
+    <details>
+      <summary><code>GaitAnalysisPipeline._load_config(path)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>从磁盘读取 YAML 配置文件为字典，供流水线各步骤使用。</p>
+        <p class="io"><strong>输入：</strong><code>config_path: str</code>，配置文件路径。</p>
+        <p class="io"><strong>输出：</strong><code>dict</code>；文件不存在时抛出 <code>FileNotFoundError</code>。</p>
+        <div class="calls"><span class="label">调用：</span><code>yaml.safe_load</code></div>
+        <div class="calls"><span class="label2">被调用：</span><code>__init__</code></div>
+      </div>
+    </details>
+    <details>
+      <summary><code>GaitAnalysisPipeline._get_intrinsics(reader, camera_idx)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>解析彩色相机内参矩阵 <code>K</code> 与畸变系数；优先 MKV/读取器元数据，其次 <code>config.yaml</code> 中 JSON，最后默认近似值。</p>
+        <p class="io"><strong>输入：</strong><code>reader</code>（<code>BaseVideoReader</code> 子类实例）；<code>camera_idx: int</code>（0/1，用于读配置键 <code>camera1_intrinsics</code> 等）。</p>
+        <p class="io"><strong>输出：</strong><code>Tuple[np.ndarray, Optional[np.ndarray]]</code> — <code>K</code> 为 <code>(3,3)</code>，<code>dist</code> 为长度 5 的畸变向量或 <code>None</code>。</p>
+        <div class="calls"><span class="label">调用：</span><code>reader.get_color_intrinsics()</code>、<code>CameraIntrinsics.to_matrix</code>；可选 <code>json.load</code> 读配置文件内参</div>
+        <div class="calls"><span class="label2">被调用：</span><code>run</code></div>
+      </div>
+    </details>
+    <details>
+      <summary><code>GaitAnalysisPipeline._run_calibration(dual_reader, K1, K2, dist1, dist2)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>从视频开头按间隔采样同步帧对，检测双视角 ChArUco 并累积位姿，最终计算立体标定结果（外参、相对位姿、履带平面、重投影误差）。</p>
+        <p class="io"><strong>输入：</strong><code>dual_reader</code>；<code>K1,K2: np.ndarray</code> 内参；<code>dist1,dist2</code> 畸变（可为 <code>None</code>）。采样数量/间隔来自 <code>config["charuco"]</code>。</p>
+        <p class="io"><strong>输出：</strong><code>Optional[CalibrationResult]</code>；有效帧不足或计算失败时为 <code>None</code>。</p>
+        <div class="calls"><span class="label">调用：</span><code>CharucoCalibrator.__init__</code>、<code>dual_reader.synchronized_frames</code>、<code>add_calibration_frame</code>、<code>compute_calibration</code></div>
+        <div class="calls"><span class="label2">被调用：</span><code>run</code></div>
+      </div>
+    </details>
+    <details>
+      <summary><code>GaitAnalysisPipeline.run(...)</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>执行完整步态分析：开视频→标定（或加载）→逐帧双视角姿态与 3D 重建→步态参数与周期→写入逐帧/周期 CSV 与摘要；结束时释放姿态模型。</p>
+        <p class="io"><strong>输入：</strong><code>video1_path, video2_path, output_dir</code> 均可选；缺省则用配置中的路径与输出目录。依赖构造时已加载的 <code>self.config</code>；若 CLI 已注入 <code>self.calibration</code> 则跳过自动标定。</p>
+        <p class="io"><strong>输出：</strong><code>Tuple[str, str]</code> — <code>(frame_csv_path, cycle_csv_path)</code>；失败时抛异常或由调用方捕获。</p>
+        <div class="calls"><span class="label">调用：</span>
+          <code>DualCameraReader</code>、<code>_get_intrinsics</code>、<code>CharucoCalibrator.load_calibration</code> / <code>_run_calibration</code>、<code>CharucoCalibrator.save_calibration</code>、
+          <code>create_pose_estimator</code>、<code>PoseReconstructor</code>、<code>GaitAnalyzer.set_belt_plane</code>、<code>synchronized_frames</code>、
+          <code>pose_estimator.estimate</code>、<code>reconstructor.reconstruct</code>、<code>gait_analyzer.add_frame</code>、<code>compute_all_parameters</code>、
+          <code>CSVWriter</code> 三个写入方法、<code>pose_estimator.release</code>
+        </div>
+        <div class="calls"><span class="label2">被调用：</span><code>main()</code></div>
+      </div>
+    </details>
+    <details>
+      <summary><code>main()</code></summary>
+      <div class="inner">
+        <p class="io"><strong>功能：</strong>解析命令行参数，覆盖配置中的姿态后端/重建方法/外置标定文件，创建流水线并执行 <code>run</code>；错误时写日志并以非零码退出。</p>
+        <p class="io"><strong>输入：</strong>无（参数来自 <code>sys.argv</code>）。</p>
+        <p class="io"><strong>输出：</strong>无；进程退出码 0 成功，1 失败。</p>
+        <div class="calls"><span class="label">调用：</span><code>argparse</code>、<code>setup_logging</code>、<code>GaitAnalysisPipeline</code>、可选 <code>CharucoCalibrator.load_calibration</code>、<code>pipeline.run</code></div>
+        <div class="calls"><span class="label2">被调用：</span><code>if __name__ == "__main__"</code></div>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- ========== run_pipeline.py ========== -->
+<details>
+  <summary><span class="tag tag-alt">入口</span> <span class="file-path">run_pipeline.py</span> — 精简 CSV 导出</summary>
+  <div class="inner">
+    <p>双机 MKV 或单机 MKV：<code>run_dual_mkv(cfg)</code>；CLI：<code>main()</code>。</p>
+    <details><summary><code>_load_config(path)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>读取 YAML 为字典。</p>
+      <p class="io"><strong>输入：</strong><code>path: str</code>。</p>
+      <p class="io"><strong>输出：</strong><code>dict</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>yaml.safe_load</code></div><div class="calls"><span class="label2">被调用：</span><code>main</code></div></div></details>
+    <details><summary><code>_K_and_dist(ci)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>从内参对象得到 <code>3×3</code> 矩阵与长度 5 的畸变向量（不足补零）。</p>
+      <p class="io"><strong>输入：</strong><code>ci: CameraIntrinsics</code>（来自读取器；若为占位需与真实标定一致）。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[np.ndarray, np.ndarray]</code> — <code>(K, dist)</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>CameraIntrinsics.to_matrix</code></div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code></div></div></details>
+    <details><summary><code>_calibrate_stereo(dual, charuco_cfg, K1, K2, d1, d2, n_frames, interval)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>双路同步帧 ChArUco 立体标定，收集足够帧后计算 <code>CalibrationResult</code>。</p>
+      <p class="io"><strong>输入：</strong>已打开的 <code>dual</code>；ChArUco 配置字典；两相机 <code>K,d</code>；目标帧数与采样间隔。</p>
+      <p class="io"><strong>输出：</strong><code>Optional[CalibrationResult]</code>；少于 3 帧有效时为 <code>None</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>CharucoCalibrator</code>、<code>add_calibration_frame</code>、<code>compute_calibration</code></div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code></div></div></details>
+    <details><summary><code>_calibrate_single_cam(reader, charuco_cfg, K, d, n_frames, interval)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>单路视频 ChArUco 标定（无第二相机），用于仅 <code>camera1_path</code> 场景。</p>
+      <p class="io"><strong>输入：</strong>单路 <code>reader</code>；<code>K,d</code>；采样参数。</p>
+      <p class="io"><strong>输出：</strong><code>Optional[CalibrationResult]</code>（<code>R2,t2</code> 等与 cam1 镜像，相对位姿为单位变换）。</p>
+      <div class="calls"><span class="label">调用：</span><code>add_calibration_frame_single</code>、<code>compute_calibration_single</code></div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code>（仅 camera1_path）</div></div></details>
+    <details><summary><code>_maybe_smooth(columns, filt)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>按配置对多列时间序列做 Savitzky–Golay 或 Butterworth 低通（原地修改 <code>columns</code>）。</p>
+      <p class="io"><strong>输入：</strong><code>columns: Dict[str, np.ndarray]</code>；<code>filt: dict</code>（<code>enabled/type/...</code>）。无 scipy 时直接返回。</p>
+      <p class="io"><strong>输出：</strong>无（<code>None</code>）。</p>
+      <div class="calls"><span class="label">调用：</span><code>scipy.signal</code>（savgol / butter / filtfilt）</div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code> 写 CSV 前</div></div></details>
+    <details><summary><code>run_dual_mkv(cfg)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>双机或单机 MKV：标定→（可选 rewind）→逐帧姿态与 3D 重建→<code>GaitTracker</code> 与 <code>compute_frame_metrics</code>→可选平滑→写出英文列表头 CSV。</p>
+      <p class="io"><strong>输入：</strong><code>cfg: dict</code>（与 <code>config.yaml</code> 结构一致，至少含 <code>video</code>/<code>charuco</code>/<code>pose</code>/<code>reconstruction</code> 等）。</p>
+      <p class="io"><strong>输出：</strong><code>str</code> — 输出 CSV 的绝对路径。</p>
+      <div class="calls"><span class="label">调用：</span><code>DualCameraReader</code> / <code>create_video_reader</code>、标定辅助函数、<code>create_pose_estimator</code>、<code>PoseReconstructor</code>、<code>GaitTracker.update</code>、<code>compute_frame_metrics</code>、<code>_maybe_smooth</code>、<code>csv.DictWriter</code></div><div class="calls"><span class="label2">被调用：</span><code>main()</code></div></div></details>
+    <details><summary><code>_primary_pose(fr, shape)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>从单帧多人体结果中取主行人 <code>PoseResult</code>。</p>
+      <p class="io"><strong>输入：</strong><code>fr: FramePoseResult</code>；<code>shape</code> 图像形状（当前实现中未使用，保留接口）。</p>
+      <p class="io"><strong>输出：</strong><code>Optional[PoseResult]</code>。</p>
+    </div></details>
+    <details><summary><code>_forward_hint_world(cfg, calib)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>从配置读取行走方向粗提示向量（世界系），用于 <code>metrics.build_treadmill_frame</code>。</p>
+      <p class="io"><strong>输入：</strong><code>cfg</code>；<code>calib</code>（第二参数保留兼容，未强制使用）。</p>
+      <p class="io"><strong>输出：</strong><code>np.ndarray</code> 形状 <code>(3,)</code>。</p>
+    </div></details>
+    <details><summary><code>_belt_world(calib)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>从标定结果取出履带平面法向与平面上一点（浮点 <code>float64</code>）。</p>
+      <p class="io"><strong>输入：</strong><code>calib: CalibrationResult</code>。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[np.ndarray, np.ndarray]</code> — <code>(normal, point)</code>，各 <code>(3,)</code>。</p>
+    </div></details>
+    <details><summary><code>_format_time(t)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>将 <code>datetime</code> 格式化为 CSV 时间列字符串（含毫秒）。</p>
+      <p class="io"><strong>输入：</strong><code>t: Optional[datetime]</code>。</p>
+      <p class="io"><strong>输出：</strong><code>str</code>；<code>t is None</code> 时为 <code>""</code>。</p>
+    </div></details>
+    <details><summary><code>main() -> None</code>（本文件）</summary><div class="inner">
+      <p class="io"><strong>功能：</strong>解析 <code>--config</code>，加载 YAML 后调用 <code>run_dual_mkv</code>；配置不存在时退出码 1。</p>
+      <p class="io"><strong>输入：</strong>无（命令行）。</p>
+      <p class="io"><strong>输出：</strong>无；以进程退出码表示成败。</p>
+      <div class="calls"><span class="label">调用：</span><code>_load_config</code>、<code>run_dual_mkv</code></div>
+    </div></details>
+  </div>
+</details>
+
+<!-- ========== check_env.py ========== -->
+<details>
+  <summary><span class="file-path">check_env.py</span> — 环境检查</summary>
+  <div class="inner">
+    <details><summary><code>check_module(name, package=None, min_version=None)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>尝试导入 Python 包并打印版本；用于环境自检脚本。</p>
+      <p class="io"><strong>输入：</strong><code>name</code> 显示名；<code>package</code> 实际 import 名（默认同 <code>name</code>）；<code>min_version</code> 源码中未校验。</p>
+      <p class="io"><strong>输出：</strong><code>bool</code> — 导入成功为 <code>True</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>importlib.import_module</code></div><div class="calls"><span class="label2">被调用：</span><code>main()</code></div></div></details>
+    <details><summary><code>check_cuda()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>检测 PyTorch 是否可用及 CUDA 设备信息。</p>
+      <p class="io"><strong>输入：</strong>无。</p>
+      <p class="io"><strong>输出：</strong><code>bool</code> — CUDA 可用为 <code>True</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>torch.cuda</code> 相关 API</div><div class="calls"><span class="label2">被调用：</span><code>main()</code></div></div></details>
+    <details><summary><code>main()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>打印 Python/平台信息并逐项检查依赖，最后给出汇总提示。</p>
+      <p class="io"><strong>输入：</strong>无。</p>
+      <p class="io"><strong>输出：</strong>无。</p>
+      <div class="calls"><span class="label">调用：</span>上述检查函数</div></div></details>
+  </div>
+</details>
+
+<!-- ========== video_reader.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/video_reader.py</span> — 视频读取与同步</summary>
+  <div class="inner">
+    <p>抽象基类 <code>BaseVideoReader</code>；具体实现 <code>OrbbecVideoReader</code>、<code>Open3DVideoReader</code>、<code>FFmpegVideoReader</code>；双路 <code>DualCameraReader</code>。</p>
+    <details><summary><code>CameraIntrinsics.to_matrix()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>将 fx,fy,cx,cy 转为 <code>3×3</code> 内参矩阵。</p>
+      <p class="io"><strong>输入：</strong>无（读取 <code>self</code> 字段）。</p>
+      <p class="io"><strong>输出：</strong><code>np.ndarray</code> 形状 <code>(3,3)</code>，<code>float64</code>。</p>
+    </div></details>
+    <details><summary><code>create_video_reader(backend, **kwargs)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>按后端名称工厂创建单路读取器实例。</p>
+      <p class="io"><strong>输入：</strong><code>backend: str</code> — <code>"orbbec"</code> / <code>"open3d"</code> / <code>"ffmpeg"</code>；未知时回退 ffmpeg；<code>ffmpeg</code> 可传 <code>depth_scale</code> 等。</p>
+      <p class="io"><strong>输出：</strong><code>BaseVideoReader</code> 子类实例。</p>
+      <div class="calls"><span class="label">调用：</span>对应 Reader 构造函数</div><div class="calls"><span class="label2">被调用：</span><code>DualCameraReader.__init__</code>、<code>run_pipeline.create_video_reader</code></div></div></details>
+    <details><summary><code>BaseVideoReader.frames()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>生成器依次产出直到 EOF 的所有 <code>FrameData</code>。</p>
+      <p class="io"><strong>输入：</strong>无。</p>
+      <p class="io"><strong>输出：</strong><code>Generator[FrameData, None, None]</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>read_frame</code>（循环）</div></div></details>
+    <details><summary><code>DualCameraReader.open / close / rewind</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong><code>open</code> 同时打开两路文件；<code>close</code> 释放；<code>rewind</code> 在两路均支持 <code>seek(0)</code> 时回到起点。</p>
+      <p class="io"><strong>输入：</strong><code>open(filepath1, filepath2)</code> 为两路 MKV 路径。</p>
+      <p class="io"><strong>输出：</strong><code>open</code>/<code>rewind</code> 返回 <code>bool</code>；<code>close</code> 无返回值。</p>
+      <div class="calls"><span class="label">调用：</span>两个 reader 的 <code>open</code>/<code>close</code>/<code>seek(0)</code></div><div class="calls"><span class="label2">被调用：</span><code>main.GaitAnalysisPipeline</code>、<code>run_dual_mkv</code></div></div></details>
+    <details><summary><code>DualCameraReader.synchronized_frames()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>按两路 <code>timestamp_us</code> 差阈值（约 16ms）对齐，产出同步的 <code>(FrameData, FrameData)</code> 对。</p>
+      <p class="io"><strong>输入：</strong>无（使用已 <code>open</code> 的 reader）。</p>
+      <p class="io"><strong>输出：</strong><code>Generator[Tuple[FrameData, FrameData], None, None]</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>reader1.read_frame</code>、<code>reader2.read_frame</code>（按时间戳对齐）</div><div class="calls"><span class="label2">被调用：</span>标定与主循环</div></div></details>
+    <details><summary>各 Reader：<code>open(filepath) -> bool</code> / <code>read_frame() -> Optional[FrameData]</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong><code>open</code> 打开文件并准备解码；<code>read_frame</code> 返回一帧 RGB-D 元数据（<code>FrameData</code>：索引、微秒时间戳、可选系统时间、彩色 <code>uint8 HWC</code>、深度 <code>uint16</code> 或 <code>None</code>）。</p>
+      <p class="io"><strong>输入：</strong><code>filepath: str</code>；<code>read_frame</code> 无参。</p>
+      <p class="io"><strong>输出：</strong><code>open</code> 成功为 <code>True</code>；<code>read_frame</code> 结束或失败为 <code>None</code>。</p>
+      <p><strong>Orbbec：</strong><code>pyorbbecsdk.Pipeline</code>。<strong>Open3D：</strong><code>AzureKinectMKVReader</code>。<strong>FFmpeg：</strong><code>ffprobe</code> + <code>cv2.VideoCapture</code>（深度常不可用）。</p>
+    </div></details>
+  </div>
+</details>
+
+<!-- ========== calibration.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/calibration.py</span> — ChArUco 标定</summary>
+  <div class="inner">
+    <p>数据类 <code>CalibrationResult</code>；核心类 <code>CharucoCalibrator</code>。</p>
+    <details><summary><code>CharucoCalibrator.__init__(config)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>根据 YAML 中 <code>charuco</code> 段创建 ArUco 字典、ChArUco 板与检测器。</p>
+      <p class="io"><strong>输入：</strong><code>config: dict</code>（含 dictionary、方格尺寸、<code>belt_plane_offset</code> 等）。</p>
+      <p class="io"><strong>输出：</strong>无；非法字典名时 <code>ValueError</code>。</p>
+    </div></details>
+    <details><summary><code>detect_charuco(image, camera_matrix, dist_coeffs)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>在单张图像上检测 ChArUco 角点并插值到亚像素级。</p>
+      <p class="io"><strong>输入：</strong><code>image</code> RGB 或灰度 <code>np.ndarray</code>；<code>camera_matrix (3,3)</code>；可选畸变系数。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[Optional[np.ndarray], Optional[np.ndarray]]</code> — <code>(corners, ids)</code>，失败为 <code>(None, None)</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>ArucoDetector.detectMarkers</code>、<code>interpolateCornersCharuco</code></div><div class="calls"><span class="label2">被调用：</span><code>add_calibration_frame*</code>、<code>calibrate_single_frame</code></div></div></details>
+    <details><summary><code>estimate_pose(charuco_corners, charuco_ids, camera_matrix, dist_coeffs)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>由 ChArUco 角点估计板坐标系到相机坐标系的 <code>rvec,tvec</code>。</p>
+      <p class="io"><strong>输入：</strong>角点与 ID、<code>K</code>、畸变。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[bool, np.ndarray, np.ndarray]</code> — <code>(success, rvec, tvec)</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>cv2.aruco.estimatePoseCharucoBoard</code></div><div class="calls"><span class="label2">被调用：</span><code>add_calibration_frame*</code></div></div></details>
+    <details><summary><code>add_calibration_frame</code> / <code>add_calibration_frame_single</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>双路版要求两相机同时看到板并估计位姿；单路版只累积相机 1 的位姿列表（供 <code>compute_calibration_single</code>）。</p>
+      <p class="io"><strong>输入：</strong>双路：<code>image1,image2,K1,K2,dist1,dist2</code>；单路：<code>image,K,dist</code>。</p>
+      <p class="io"><strong>输出：</strong><code>bool</code> — 该帧是否成功加入样本集。</p>
+      <div class="calls"><span class="label">调用：</span><code>detect_charuco</code>、<code>estimate_pose</code></div><div class="calls"><span class="label2">被调用：</span><code>main._run_calibration</code>、<code>run_pipeline._calibrate_*</code></div></div></details>
+    <details><summary><code>compute_calibration</code> / <code>compute_calibration_single</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>对累积的多帧位姿做平均/融合，得到 <code>CalibrationResult</code>（双相机外参、相对变换、世界系履带平面法向与点、重投影误差等）；单路版将 cam2 设为与 cam1 相同外参。</p>
+      <p class="io"><strong>输入：</strong><code>compute_calibration(K1,K2,dist1,dist2)</code>；<code>compute_calibration_single(K,dist)</code>。</p>
+      <p class="io"><strong>输出：</strong><code>Optional[CalibrationResult]</code>；有效帧少于 3 为 <code>None</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>_average_poses</code>、<code>_compute_reprojection_error</code></div><div class="calls"><span class="label2">被调用：</span>标定流程收尾</div></div></details>
+    <details><summary><code>save_calibration(result, filepath)</code> / <code>load_calibration(filepath) -> Optional[CalibrationResult]</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>将标定结果序列化为 JSON 或从 JSON 恢复为数据类。</p>
+      <p class="io"><strong>输入：</strong><code>CalibrationResult</code> 与路径 / 仅路径。</p>
+      <p class="io"><strong>输出：</strong><code>save</code> 无返回；<code>load</code> 失败返回 <code>None</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>json.dump/load</code></div><div class="calls"><span class="label2">被调用：</span><code>main.run</code>、CLI <code>--calibration-file</code></div></div></details>
+    <details><summary><code>compute_treadmill_plane(R_cam, t_cam, belt_offset)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>由板到相机的位姿推算履带平面在相机坐标系下的法向与一点（标记面向下偏移）。</p>
+      <p class="io"><strong>输入：</strong><code>R_cam (3,3)</code>、<code>t_cam (3,1)</code>、<code>belt_offset</code> 米。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[np.ndarray, np.ndarray]</code> — <code>(plane_normal_cam, plane_point_cam)</code>。</p>
+    </div></details>
+    <details><summary><code>point_to_plane_distance(point, plane_normal, plane_point)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>计算点到平面的有符号距离（沿法向，正方向为法向一侧）。</p>
+      <p class="io"><strong>输入：</strong>各为长度 3 的 <code>np.ndarray</code>；法向应为单位向量时距离即几何高度。</p>
+      <p class="io"><strong>输出：</strong><code>float</code>。</p>
+      <div class="calls"><span class="label2">被调用：</span><code>gait_analysis</code>、<code>metrics</code>、<code>reconstruction</code>（导入）</div></div></details>
+  </div>
+</details>
+
+<!-- ========== pose_estimation.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/pose_estimation.py</span> — 2D 姿态</summary>
+  <div class="inner">
+    <details><summary><code>fill_derived_keypoints(keypoints, confidence)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>原地补全 <code>neck</code>、<code>hip_center</code>（由双肩/双髋中点及置信度门限）。</p>
+      <p class="io"><strong>输入：</strong><code>keypoints (NUM_KEYPOINTS, 2)</code>、<code>confidence (NUM_KEYPOINTS,)</code>。</p>
+      <p class="io"><strong>输出：</strong>无（原地修改数组）。</p>
+      <div class="calls"><span class="label2">被调用：</span><code>MMPosePoseEstimator</code> / <code>UltralyticsPoseEstimator</code></div></div></details>
+    <details><summary><code>BasePoseEstimator.select_primary_person(result, image_shape)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>多人体时按 bbox 面积与距画面中心距离（或关键点启发）选主行人索引。</p>
+      <p class="io"><strong>输入：</strong><code>FramePoseResult</code>；<code>image_shape</code> 为 <code>(H,W,...)</code>。</p>
+      <p class="io"><strong>输出：</strong><code>int</code> — 选中行人在 <code>persons</code> 列表中的下标。</p>
+      <div class="calls"><span class="label2">被调用：</span><code>MMPosePoseEstimator._estimate_*</code>、<code>UltralyticsPoseEstimator.estimate</code></div></div></details>
+    <details><summary><code>MediaPipePoseEstimator.initialize / estimate / release</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong><code>initialize</code> 创建 MediaPipe Pose；<code>estimate</code> 将 33 点映射到统一 26 点 <code>FramePoseResult</code>；<code>release</code> 关闭会话。</p>
+      <p class="io"><strong>输入：</strong><code>initialize(config)</code>；<code>estimate(image)</code> 为 RGB <code>uint8 (H,W,3)</code>。</p>
+      <p class="io"><strong>输出：</strong><code>initialize</code> → <code>bool</code>；<code>estimate</code> → <code>FramePoseResult</code>（含 <code>persons</code> 列表）；<code>release</code> → <code>None</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>mp.solutions.pose.Pose.process</code></div><div class="calls"><span class="label2">被调用：</span><code>create_pose_estimator</code>（backend=mediapipe）</div></div></details>
+    <details><summary><code>MMPosePoseEstimator</code>（主要方法）</summary><div class="inner">
+      <p class="io"><strong><code>initialize(config) -> bool</code></strong> 加载检测+姿态模型（Inferencer 优先，失败则 top-down）。</p>
+      <p class="io"><strong><code>estimate(image) -> FramePoseResult</code></strong> RGB 输入；内部 BGR 转换；填充统一关键点并设 <code>primary_person_idx</code>。</p>
+      <p class="io"><strong><code>release() -> None</code></strong> 释放 GPU 句柄与缓存。</p>
+      <ul class="compact">
+        <li><code>initialize</code> → <code>_init_with_inferencer</code> 或 <code>_init_with_topdown</code></li>
+        <li><code>estimate</code> → <code>_estimate_inferencer</code> 或 <code>_estimate_topdown</code></li>
+        <li><code>_estimate_inferencer</code> → MMPoseInferencer、<code>fill_derived_keypoints</code>、<code>select_primary_person</code></li>
+        <li><code>_estimate_topdown</code> → <code>inference_detector</code>、<code>inference_topdown</code>、<code>fill_derived_keypoints</code>、<code>select_primary_person</code></li>
+      </ul>
+    </div></details>
+    <details><summary><code>UltralyticsPoseEstimator.initialize / estimate / release</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>基于 YOLO pose 权重推理，将 COCO17 或更多点映射到统一 26 点格式。</p>
+      <p class="io"><strong>输入：</strong><code>initialize</code> 读 <code>config["ultralytics"]</code>；<code>estimate(image)</code> 为 RGB。</p>
+      <p class="io"><strong>输出：</strong>同抽象接口：<code>bool</code> / <code>FramePoseResult</code> / <code>None</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>YOLO.predict</code>、<code>fill_derived_keypoints</code>、<code>select_primary_person</code></div></div></details>
+    <details><summary><code>create_pose_estimator(config) -> BasePoseEstimator</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>按 <code>config["pose"]["backend"]</code> 构造并 <code>initialize</code>；mmpose 初始化失败时尝试回退 MediaPipe。</p>
+      <p class="io"><strong>输入：</strong><code>config: dict</code>（至少含 <code>pose</code> 子字典）。</p>
+      <p class="io"><strong>输出：</strong>已初始化的 <code>BasePoseEstimator</code> 子类实例；全部失败时抛 <code>RuntimeError</code>。</p>
+      <div class="calls"><span class="label">调用：</span>各后端 <code>initialize</code></div><div class="calls"><span class="label2">被调用：</span><code>main</code>、<code>run_pipeline</code></div></div></details>
+  </div>
+</details>
+
+<!-- ========== reconstruction.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/reconstruction.py</span> — 3D 重建</summary>
+  <div class="inner">
+    <p class="muted">数据类 <code>Pose3D</code>：<code>keypoints_3d (26,3)</code> 米、<code>confidence (26,)</code>、<code>valid_mask (26,) bool</code>、<code>method</code> 字符串。</p>
+    <details><summary><code>StereoTriangulator.triangulate_point(pt1, pt2)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>DLT/SVD 由两视图像素坐标求世界系 3D 点。</p>
+      <p class="io"><strong>输入：</strong><code>pt1, pt2</code> 各为 <code>(x,y)</code>。</p>
+      <p class="io"><strong>输出：</strong><code>np.ndarray</code> 形状 <code>(3,)</code>。</p>
+    </div></details>
+    <details><summary><code>StereoTriangulator.triangulate_pose(pose1, pose2, min_confidence, reproj_threshold)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>对 26 个关键点逐点三角化，并按重投影误差与置信度筛选有效点。</p>
+      <p class="io"><strong>输入：</strong>两路 <code>PoseResult</code>（像素坐标+置信度）；阈值可来自 <code>PoseReconstructor</code> 配置。</p>
+      <p class="io"><strong>输出：</strong><code>Pose3D</code>，<code>method="triangulation"</code>。</p>
+      <div class="calls"><span class="label">调用：</span>每点 <code>triangulate_point</code>、<code>_reprojection_error</code></div><div class="calls"><span class="label2">被调用：</span><code>PoseReconstructor.reconstruct</code></div></div></details>
+    <details><summary><code>DepthBackprojector.get_depth_at_point / backproject_point / backproject_pose</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>在深度图邻域取稳健深度（中位数），再经内参+外参变到世界坐标；<code>backproject_pose</code> 对整幅骨架逐点调用。</p>
+      <p class="io"><strong>输入：</strong><code>depth_map uint16</code>；像素坐标；<code>camera_idx</code> 0/1 选择 <code>K,R,t</code>；置信度与搜索半径等。</p>
+      <p class="io"><strong>输出：</strong><code>get_depth_at_point</code> → <code>Optional[float]</code>（米）；<code>backproject_pose</code> → <code>Pose3D</code>，<code>method="depth"</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>get_depth_at_point</code>、<code>backproject_point</code></div><div class="calls"><span class="label2">被调用：</span><code>PoseReconstructor._reconstruct_depth</code></div></div></details>
+    <details><summary><code>PoseReconstructor.__init__(calibration, config)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>构造三角化器与深度反投影器，缓存方法名、融合权重与各类阈值。</p>
+      <p class="io"><strong>输入：</strong><code>CalibrationResult</code>；<code>config</code> 含 <code>method</code>、<code>fusion</code>、<code>triangulation</code>、<code>depth</code>、<code>depth_scale</code>。</p>
+      <p class="io"><strong>输出：</strong>无。</p>
+    </div></details>
+    <details><summary><code>PoseReconstructor.reconstruct(pose1, pose2, depth1=None, depth2=None)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>按 <code>method</code> 为 <code>triangulation</code> / <code>depth</code> / <code>fusion</code> 调用对应路径；未知方法回退三角化。</p>
+      <p class="io"><strong>输入：</strong>两路 <code>PoseResult</code>；深度图为 <code>uint16</code> 或 <code>None</code>（单机单深度时第二路可为 <code>None</code>）。</p>
+      <p class="io"><strong>输出：</strong><code>Pose3D</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>triangulate_pose</code>、<code>_reconstruct_depth</code>、<code>_reconstruct_fusion</code></div><div class="calls"><span class="label2">被调用：</span><code>main</code> 帧循环、<code>run_dual_mkv</code></div></div></details>
+    <details><summary><code>_reconstruct_fusion</code> / <code>_merge_depth_poses</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>融合三角与深度结果：两点接近则加权平均，差异大则优先三角化；双深度结果用置信度择优合并。</p>
+      <p class="io"><strong>输入：</strong>内部使用两路 <code>PoseResult</code> 与可选深度图。</p>
+      <p class="io"><strong>输出：</strong><code>Pose3D</code>（<code>method="fusion"</code> 或 depth 分支的 <code>"depth"</code>）。</p>
+      <div class="calls"><span class="label">调用：</span><code>triangulate_pose</code>、<code>_reconstruct_depth</code>、<code>_merge_depth_poses</code></div></div></details>
+  </div>
+</details>
+
+<!-- ========== gait_analysis.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/gait_analysis.py</span> — 步态分析（main 线）</summary>
+  <div class="inner">
+    <details><summary><code>GaitAnalyzer.__init__(config, fps)</code> / <code>set_belt_plane</code> / <code>add_frame</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>保存滤波与事件检测参数、帧间隔；<code>set_belt_plane</code> 设置履带平面单位法向与一点；<code>add_frame</code> 累积每帧 <code>Pose3D</code> 与时间戳。</p>
+      <p class="io"><strong>输入：</strong><code>config</code> 含 <code>filter</code>/<code>event_detection</code>/<code>analyze_side</code>；<code>fps</code>；<code>set_belt_plane(normal, point)</code>；<code>add_frame(pose, timestamp_us)</code>。</p>
+      <p class="io"><strong>输出：</strong>均无返回值。</p>
+    </div></details>
+    <details><summary><code>compute_frame_parameters(pose, prev_pose=None)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>根据当前 3D 骨架与 <code>analyze_side</code> 计算单帧俯仰角、髋膝踝角度、足 clearance 等（<code>prev_pose</code> 接口保留，当前实现主要不依赖）。</p>
+      <p class="io"><strong>输入：</strong><code>Pose3D</code>；可选上一帧。</p>
+      <p class="io"><strong>输出：</strong><code>GaitParameters</code> 数据类（各字段可能为 <code>nan</code>）。</p>
+      <div class="calls"><span class="label">调用：</span>多个 <code>_compute_*</code>、<code>point_to_plane_distance</code></div><div class="calls"><span class="label2">被调用：</span><code>compute_all_parameters</code></div></div></details>
+    <details><summary><code>detect_gait_events()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>在已累积的足端高度序列上检测足跟着地/离地等事件（速度阈值或高度阈值法）。</p>
+      <p class="io"><strong>输入：</strong>无（使用内部 <code>_pose_history</code>）。</p>
+      <p class="io"><strong>输出：</strong><code>List[GaitEvent]</code>；帧数过少时可能为空列表。</p>
+      <div class="calls"><span class="label">调用：</span><code>_detect_events_velocity</code> 或 <code>_detect_events_position</code></div><div class="calls"><span class="label2">被调用：</span><code>compute_all_parameters</code></div></div></details>
+    <details><summary><code>compute_step_length</code> / <code>compute_cadence</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>相邻足跟着地间足部 3D 位置在履带平面上的水平距离；<code>compute_cadence</code> 由足跟着地时间间隔换算步频（步/分钟）。</p>
+      <p class="io"><strong>输入：</strong><code>GaitEvent</code> 列表等。</p>
+      <p class="io"><strong>输出：</strong><code>float</code>（可能 <code>nan</code>）。</p>
+    </div></details>
+    <details><summary><code>compute_all_parameters()</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>逐帧参数→事件检测→步长/步频填回帧结构→步态周期聚合→可选时间滤波。</p>
+      <p class="io"><strong>输入：</strong>无。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[List[GaitParameters], List[GaitCycleData]]</code>。</p>
+      <div class="calls"><span class="label">调用：</span><code>compute_frame_parameters</code>、<code>detect_gait_events</code>、<code>compute_step_length</code>、<code>compute_cadence</code>、<code>_compute_cycle_data</code>、<code>_filter_frame_parameters</code></div><div class="calls"><span class="label2">被调用：</span><code>main.GaitAnalysisPipeline.run</code></div></div></details>
+  </div>
+</details>
+
+<!-- ========== metrics.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/metrics.py</span> — 指标与步态跟踪（run_pipeline 线）</summary>
+  <div class="inner">
+    <details><summary><code>build_treadmill_frame(forward_hint, world_up)</code> 等几何小函数</summary><div class="inner">
+      <p class="io"><strong>功能：</strong>由「向上」与行走方向粗提示构造正交基 <code>(forward, left, up)</code>；<code>trunk_pitch_deg_in_sagittal</code>、<code>hip_abduction_deg</code>、<code>hip_flexion_deg</code>、<code>knee_flexion_deg</code>、<code>ankle_angle_deg</code> 等在跑步机世界系下算角度（度）。</p>
+      <p class="io"><strong>输入：</strong>均为 <code>np.ndarray (3,)</code> 或两向量。</p>
+      <p class="io"><strong>输出：</strong>基为三个单位向量；角度函数返回 <code>float</code>。</p>
+    </div></details>
+    <details><summary><code>compute_frame_metrics(pose, belt_normal_world, belt_point_world, forward_hint, bilateral_average=True)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>在履带平面法向与行走方向定义下，计算躯干俯仰与左右下肢角度；默认可双侧平均；足 clearance 取左右较大值思路。</p>
+      <p class="io"><strong>输入：</strong><code>Pose3D</code>；平面法向与一点；<code>forward_hint</code>；是否双侧平均。</p>
+      <p class="io"><strong>输出：</strong><code>FrameMetrics</code> 数据类（各角度与 clearance 等，步长/步频字段常由 Tracker 填写）。</p>
+      <div class="calls"><span class="label">调用：</span><code>build_treadmill_frame</code>、<code>_limb_metrics</code>、<code>point_to_plane_distance</code></div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code> 每帧</div></div></details>
+    <details><summary><code>GaitTracker.update(pose, time_s)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>根据足端相对履带高度与阈值检测摆动峰值与足跟着地，更新最近步长（左右髋在前进方向的间距）与瞬时步频。</p>
+      <p class="io"><strong>输入：</strong><code>Pose3D</code>；当前时间秒（与视频时间戳一致的量纲）。</p>
+      <p class="io"><strong>输出：</strong><code>Tuple[float, float]</code> — 左右足 clearance 估计值（米，可能为 <code>nan</code>）。副作用：更新 <code>last_step_length_m</code>、<code>last_step_frequency_spm</code> 等字段。</p>
+      <div class="calls"><span class="label">调用：</span><code>_best_clearance_m</code>、<code>_heel_strike</code>、<code>_update_cadence</code> 等</div><div class="calls"><span class="label2">被调用：</span><code>run_dual_mkv</code></div></div></details>
+  </div>
+</details>
+
+<!-- ========== output.py ========== -->
+<details>
+  <summary><span class="tag tag-mod">模块</span> <span class="file-path">modules/output.py</span> — CSV 与摘要</summary>
+  <div class="inner">
+    <details><summary><code>CSVWriter.__init__(output_dir, start_time=None, fps=30)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>创建输出目录；记录用于将相对微秒时间戳映射为「伪绝对」系统时间的起点与帧率。</p>
+      <p class="io"><strong>输入：</strong>输出目录路径；可选录制开始 <code>datetime</code>；<code>fps</code>。</p>
+      <p class="io"><strong>输出：</strong>无。</p>
+    </div></details>
+    <details><summary><code>timestamp_to_system_time(timestamp_us)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong><code>start_time + timedelta(microseconds=timestamp_us)</code> 格式化为中文 CSV 用时间字符串。</p>
+      <p class="io"><strong>输入：</strong><code>timestamp_us: int</code>。</p>
+      <p class="io"><strong>输出：</strong><code>str</code>，格式 <code>YYYY-MM-DD HH:MM:SS.mmm</code>。</p>
+      <div class="calls"><span class="label2">被调用：</span><code>write_frame_csv</code>、<code>write_cycle_csv</code></div></div></details>
+    <details><summary><code>write_frame_csv(parameters, timestamps_us, filename)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>写入 UTF-8 BOM 逐帧 CSV（中文列名）。</p>
+      <p class="io"><strong>输入：</strong><code>List[GaitParameters]</code>；与帧对齐的 <code>timestamps_us</code>；文件名。</p>
+      <p class="io"><strong>输出：</strong><code>str</code> — 写出文件的完整路径。</p>
+      <div class="calls"><span class="label">调用：</span><code>timestamp_to_system_time</code>、<code>csv.writer</code></div><div class="calls"><span class="label2">被调用：</span><code>main.GaitAnalysisPipeline.run</code></div></div></details>
+    <details><summary><code>write_cycle_csv(cycles, filename)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>每个步态周期一行汇总指标（中文列名）。</p>
+      <p class="io"><strong>输入：</strong><code>List[GaitCycleData]</code>；文件名。</p>
+      <p class="io"><strong>输出：</strong><code>str</code> — 文件路径。</p>
+      <div class="calls"><span class="label">调用：</span><code>timestamp_to_system_time</code>、<code>csv.writer</code></div><div class="calls"><span class="label2">被调用：</span><code>main.GaitAnalysisPipeline.run</code></div></div></details>
+    <details><summary><code>write_summary(frame_params, cycle_data, filename)</code></summary><div class="inner">
+      <p class="io"><strong>功能：</strong>写文本摘要（帧数、周期数、各指标在周期上的均值±标准差）。</p>
+      <p class="io"><strong>输入：</strong>帧级与周期级结果列表；可选文件名。</p>
+      <p class="io"><strong>输出：</strong><code>str</code> — 文件路径。</p>
+      <div class="calls"><span class="label">调用：</span><code>open</code> 文本写入、<code>numpy.mean/std</code></div><div class="calls"><span class="label2">被调用：</span><code>main.GaitAnalysisPipeline.run</code></div></div></details>
+  </div>
+</details>
+
+<h2 id="config">6. 配置与外部库</h2>
+<details>
+  <summary><span class="file-path">config.yaml</span> 关键段</summary>
+  <div class="inner">
+    <ul class="compact">
+      <li><code>video</code>：路径、<code>reader_backend</code></li>
+      <li><code>charuco</code>：字典与板尺寸、标定采样帧数</li>
+      <li><code>pose</code>：<code>backend</code> 及 mediapipe / mmpose / ultralytics 子配置</li>
+      <li><code>reconstruction</code>：<code>method</code>、三角化与深度阈值、融合权重</li>
+      <li><code>gait</code>：滤波、事件检测、侧别；run_pipeline 还读 <code>forward_hint_board</code>、<code>airborne_thresh_m</code> 等</li>
+      <li><code>output</code>：输出目录与 CSV 文件名</li>
+    </ul>
+  </div>
+</details>
+<details>
+  <summary>外部依赖（按功能）</summary>
+  <div class="inner">
+    <ul class="compact">
+      <li><strong>视频</strong>：<code>pyorbbecsdk</code> / <code>open3d</code> / <code>opencv-python</code> + 系统 <code>ffprobe</code></li>
+      <li><strong>数值与标定</strong>：<code>numpy</code>、<code>opencv-python</code>（ArUco/ChArUco）</li>
+      <li><strong>姿态</strong>：<code>mediapipe</code> 或 <code>mmpose</code>+<code>mmdet</code> 或 <code>ultralytics</code></li>
+      <li><strong>步态滤波</strong>：<code>scipy</code>（<code>gait_analysis</code> 与 <code>run_pipeline._maybe_smooth</code>）</li>
+    </ul>
+  </div>
+</details>
+
+<h2>新手阅读顺序建议</h2>
+<ol>
+  <li>阅读本页「数据流」与 <code>main.py</code> 中 <code>GaitAnalysisPipeline.run</code> 的步骤注释。</li>
+  <li>打开 <code>modules/video_reader.py</code> 理解 <code>synchronized_frames</code> 如何对齐两路时间戳。</li>
+  <li>打开 <code>modules/calibration.py</code> 理解世界系与 <code>belt_plane_*</code>。</li>
+  <li>顺着 <code>create_pose_estimator</code> → <code>PoseReconstructor.reconstruct</code> → <code>GaitAnalyzer.compute_all_parameters</code> 走一遍。</li>
+  <li>若关心 <code>run_pipeline.py</code> 与主线的差异，对比「逐帧 metrics + GaitTracker」与「GaitAnalyzer 事件+周期」两套输出逻辑。</li>
+</ol>
+
+<footer>
+  文档生成自仓库当前结构；函数的功能与输入输出以源码为准，若实现变更请以 IDE 跳转为准。打开方式：双击本文件或用浏览器「打开文件」选择 <code>docs/code_architecture_guide.html</code>。
+</footer>
+
+</body>
+</html>
